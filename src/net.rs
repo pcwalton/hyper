@@ -3,6 +3,7 @@ use std::any::{Any, AnyRefExt};
 use std::boxed::BoxAny;
 use std::fmt;
 use std::intrinsics::TypeId;
+#[allow(unused_imports)]
 use std::io::{IoResult, IoError, ConnectionAborted, InvalidInput, OtherIoError,
               Stream, Listener, Acceptor};
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
