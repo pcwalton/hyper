@@ -247,7 +247,7 @@ impl NetworkConnector for HttpStream {
                 #[inline]
                 fn https<To: ToSocketAddr>(_: To) -> IoResult<HttpStream> {
                     Err(IoError {
-                        kind: io::InvalidInput,
+                        kind: InvalidInput,
                         desc: "openssl currently unavailable on android",
                         detail: None
                     })
