@@ -14,9 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use uany::UncheckedBoxAnyDowncast;
 use typeable::Typeable;
-#[cfg(not(target_os="android"))]
+#[cfg(feature="ssl")]
 use openssl::ssl::{SslStream, SslContext, Sslv23};
-#[cfg(not(target_os="android"))]
+#[cfg(feature="ssl")]
 use openssl::ssl::error::{SslError, StreamError, OpenSslErrors, SslSessionClosed};
 
 /// The write-status indicating headers have not been written.
@@ -182,10 +182,10 @@ pub enum HttpStream {
     // doesn't implement Clone, and we need Clone to use the stream for
     // both the Request and Response.
     // FIXME: https://github.com/sfackler/rust-openssl/issues/6
-    #[cfg(not(target_os="android"))]
+    #[cfg(feature="ssl")]
     Https(Arc<Mutex<SslStream<TcpStream>>>, SocketAddr),
     /// A stream that cannot work without OpenSSL.
-    #[cfg(target_os="android")]
+    #[cfg(not(feature="ssl"))]
     Https(Arc<Mutex<TcpStream>>, SocketAddr),
 }
 
@@ -237,7 +237,7 @@ impl NetworkConnector for HttpStream {
                 debug!("https scheme");
                 return https(addr);
 
-                #[cfg(not(target_os="android"))]
+                #[cfg(feature="ssl")]
                 #[inline]
                 fn https<To: ToSocketAddr>(addr: To) -> IoResult<HttpStream> {
                     let mut stream = try!(TcpStream::connect(addr));
@@ -249,12 +249,12 @@ impl NetworkConnector for HttpStream {
                     Ok(Https(Arc::new(Mutex::new(stream)), peer_addr))
                 };
 
-                #[cfg(target_os="android")]
+                #[cfg(not(feature="ssl"))]
                 #[inline]
                 fn https<To: ToSocketAddr>(_: To) -> IoResult<HttpStream> {
                     Err(IoError {
                         kind: InvalidInput,
-                        desc: "openssl currently unavailable on android",
+                        desc: "openssl currently unavailable",
                         detail: None
                     })
                 }
@@ -270,7 +270,7 @@ impl NetworkConnector for HttpStream {
     }
 }
 
-#[cfg(not(target_os="android"))]
+#[cfg(feature="ssl")]
 fn lift_ssl_error(ssl: SslError) -> IoError {
     match ssl {
         StreamError(err) => err,

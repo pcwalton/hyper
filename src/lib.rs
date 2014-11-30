@@ -129,7 +129,7 @@
 extern crate serialize;
 extern crate time;
 extern crate url;
-#[cfg(not(target_os="android"))]
+#[cfg(feature="ssl")]
 extern crate openssl;
 #[phase(plugin,link)] extern crate log;
 #[cfg(test)] extern crate test;
