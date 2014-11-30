@@ -170,6 +170,7 @@ impl NetworkAcceptor<HttpStream> for HttpAcceptor {
     }
 }
 
+
 /// A wrapper around a TcpStream.
 #[deriving(Clone)]
 pub enum HttpStream {
@@ -180,7 +181,11 @@ pub enum HttpStream {
     // doesn't implement Clone, and we need Clone to use the stream for
     // both the Request and Response.
     // FIXME: https://github.com/sfackler/rust-openssl/issues/6
+    #[cfg(not(target_os="android"))]
     Https(Arc<Mutex<SslStream<TcpStream>>>, SocketAddr),
+    /// A stream that cannot work without OpenSSL.
+    #[cfg(target_os="android")]
+    Https(Arc<Mutex<TcpStream>>, SocketAddr),
 }
 
 impl Reader for HttpStream {
