@@ -281,6 +281,12 @@ impl<'a> HeaderView<'a> {
     pub fn value<H: Header + HeaderFormat>(&self) -> Option<&'a H> {
         get_or_parse::<H>(self.1).map(|item| downcast(item.read()))
     }
+
+    /// Get just the header value as a String.
+    #[inline]
+    pub fn value_string(&self) -> String {
+        (*self.1.read()).to_string()
+    }
 }
 
 impl<'a> fmt::Show for HeaderView<'a> {
