@@ -278,10 +278,6 @@ impl<'a> HeaderView<'a> {
     pub fn value<H: Header + HeaderFormat>(&self) -> Option<&'a H> {
         get_or_parse::<H>(self.1).map(|item| downcast(item.read()))
     }
-
-    pub fn value_string(&self) -> String {
-        (*self.1.read()).to_string()
-    }
 }
 
 impl<'a> fmt::Show for HeaderView<'a> {
@@ -624,7 +620,6 @@ mod tests {
             assert!(header.is::<ContentLength>());
             assert_eq!(header.name(), Header::header_name(None::<ContentLength>));
             assert_eq!(header.value(), Some(ContentLength(11)));
-            assert_eq!(header.value_string(), "11".to_string());
         }
     }
 
