@@ -4,12 +4,14 @@ use std::io::{BufferedReader, IoResult};
 
 use header;
 use header::common::{ContentLength, TransferEncoding};
-use header::common::transfer_encoding::Chunked;
+use header::common::transfer_encoding::Encoding::Chunked;
 use net::{NetworkStream, HttpStream};
-use http::{read_status_line, HttpReader, SizedReader, ChunkedReader, EofReader, RawStatus};
+use http::{read_status_line, HttpReader, RawStatus};
+use http::HttpReader::{SizedReader, ChunkedReader, EofReader};
 use status;
 use version;
-use {HttpResult, HttpStatusError};
+use HttpResult;
+use HttpError::HttpStatusError;
 
 /// A response for a client request to a remote server.
 pub struct Response<S = HttpStream> {
@@ -36,7 +38,7 @@ impl Response {
         debug!("{} {}", version, status);
 
         let headers = try!(header::Headers::from_raw(&mut stream));
-        debug!("{}", headers);
+        debug!("Headers: [\n{}]", headers);
 
         let body = if headers.has::<TransferEncoding>() {
             match headers.get::<TransferEncoding>() {
@@ -78,9 +80,9 @@ impl Response {
         &self.status_raw
     }
 
-    /// Unwraps the Request to return the NetworkStream underneath.
-    pub fn unwrap(self) -> Box<NetworkStream + Send> {
-        self.body.unwrap().unwrap()
+    /// Consumes the Request to return the NetworkStream underneath.
+    pub fn into_inner(self) -> Box<NetworkStream + Send> {
+        self.body.unwrap().into_inner()
     }
 }
 
@@ -93,11 +95,13 @@ impl Reader for Response {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow::Borrowed;
     use std::boxed::BoxAny;
     use std::io::BufferedReader;
 
     use header::Headers;
-    use http::{EofReader, RawStatus};
+    use http::HttpReader::EofReader;
+    use http::RawStatus;
     use mock::MockStream;
     use net::NetworkStream;
     use status;
@@ -109,14 +113,14 @@ mod tests {
     #[test]
     fn test_unwrap() {
         let res = Response {
-            status: status::Ok,
+            status: status::StatusCode::Ok,
             headers: Headers::new(),
-            version: version::Http11,
+            version: version::HttpVersion::Http11,
             body: EofReader(BufferedReader::new(box MockStream::new() as Box<NetworkStream + Send>)),
-            status_raw: RawStatus(200, "OK".to_string())
+            status_raw: RawStatus(200, Borrowed("OK"))
         };
 
-        let b = res.unwrap().downcast::<MockStream>().unwrap();
+        let b = res.into_inner().downcast::<MockStream>().unwrap();
         assert_eq!(b, box MockStream::new());
 
     }

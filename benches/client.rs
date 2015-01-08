@@ -7,28 +7,30 @@ extern crate test;
 
 use std::fmt::{mod, Show};
 use std::io::net::ip::Ipv4Addr;
-use hyper::server::{Incoming, Server};
+use hyper::server::{Request, Response, Server};
+use hyper::method::Method::Get;
+use hyper::header::Headers;
+use hyper::Client;
+use hyper::client::RequestBuilder;
 
 fn listen() -> hyper::server::Listening {
     let server = Server::http(Ipv4Addr(127, 0, 0, 1), 0);
     server.listen(handle).unwrap()
 }
 
-macro_rules! try_continue(
+macro_rules! try_return(
     ($e:expr) => {{
         match $e {
             Ok(v) => v,
-            Err(..) => continue
+            Err(..) => return
         }
     }})
 
-fn handle(mut incoming: Incoming) {
-    for conn in incoming {
-        let (_, res) = try_continue!(conn.open());
-        let mut res = try_continue!(res.start());
-        try_continue!(res.write(b"Benchmarking hyper vs others!"))
-        try_continue!(res.end());
-    }
+fn handle(_r: Request, res: Response) {
+    static BODY: &'static [u8] = b"Benchmarking hyper vs others!";
+    let mut res = try_return!(res.start());
+    try_return!(res.write(BODY))
+    try_return!(res.end());
 }
 
 
@@ -44,9 +46,10 @@ fn bench_curl(b: &mut test::Bencher) {
             .exec()
             .unwrap()
     });
-    listening.close().unwrap()
+    listening.close().unwrap();
 }
 
+#[deriving(Clone)]
 struct Foo;
 
 impl hyper::header::Header for Foo {
@@ -69,17 +72,17 @@ fn bench_hyper(b: &mut test::Bencher) {
     let mut listening = listen();
     let s = format!("http://{}/", listening.socket);
     let url = s.as_slice();
+    let mut client = Client::new();
+    let mut headers = Headers::new();
+    headers.set(Foo);
     b.iter(|| {
-        let mut req = hyper::client::Request::get(hyper::Url::parse(url).unwrap()).unwrap();
-        req.headers_mut().set(Foo);
-
-        req.start().unwrap()
-            .send().unwrap()
-            .read_to_string().unwrap()
+        client.get(url).header(Foo).send().unwrap().read_to_string().unwrap();
     });
     listening.close().unwrap()
 }
 
+/*
+doesn't handle keep-alive properly...
 #[bench]
 fn bench_http(b: &mut test::Bencher) {
     let mut listening = listen();
@@ -94,9 +97,10 @@ fn bench_http(b: &mut test::Bencher) {
         // cant unwrap because Err contains RequestWriter, which does not implement Show
         let mut res = match req.read_response() {
             Ok(res) => res,
-            Err(..) => panic!("http response failed")
+            Err((_, ioe)) => panic!("http response failed = {}", ioe)
         };
         res.read_to_string().unwrap();
     });
     listening.close().unwrap()
 }
+*/

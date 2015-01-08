@@ -1,6 +1,6 @@
 use std::fmt;
 use std::io::{IoResult, MemReader, MemWriter};
-use std::io::net::ip::{SocketAddr, ToSocketAddr};
+use std::io::net::ip::SocketAddr;
 
 use net::{NetworkStream, NetworkConnector};
 
@@ -40,6 +40,13 @@ impl MockStream {
             write: MemWriter::new(),
         }
     }
+
+    pub fn with_input(input: &[u8]) -> MockStream {
+        MockStream {
+            read: MemReader::new(input.to_vec()),
+            write: MemWriter::new(),
+        }
+    }
 }
 impl Reader for MockStream {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<uint> {
@@ -54,14 +61,47 @@ impl Writer for MockStream {
 }
 
 impl NetworkStream for MockStream {
-
     fn peer_name(&mut self) -> IoResult<SocketAddr> {
         Ok(from_str("127.0.0.1:1337").unwrap())
     }
 }
 
-impl NetworkConnector for MockStream {
-    fn connect<To: ToSocketAddr>(_addr: To, _scheme: &str) -> IoResult<MockStream> {
+pub struct MockConnector;
+
+impl NetworkConnector<MockStream> for MockConnector {
+    fn connect(&mut self, _host: &str, _port: u16, _scheme: &str) -> IoResult<MockStream> {
         Ok(MockStream::new())
     }
 }
+
+/// new connectors must be created if you wish to intercept requests.
+macro_rules! mock_connector (
+    ($name:ident {
+        $($url:expr => $res:expr)*
+    }) => (
+
+        struct $name;
+
+        impl ::net::NetworkConnector<::mock::MockStream> for $name {
+            fn connect(&mut self, host: &str, port: u16, scheme: &str) -> ::std::io::IoResult<::mock::MockStream> {
+                use std::collections::HashMap;
+                debug!("MockStream::connect({}, {}, {})", host, port, scheme);
+                let mut map = HashMap::new();
+                $(map.insert($url, $res);)*
+
+
+                let key = format!("{}://{}", scheme, host);
+                // ignore port for now
+                match map.find(&&*key) {
+                    Some(res) => Ok(::mock::MockStream {
+                        write: ::std::io::MemWriter::new(),
+                        read: ::std::io::MemReader::new(res.to_string().into_bytes())
+                    }),
+                    None => panic!("{} doesn't know url {}", stringify!($name), key)
+                }
+            }
+
+        }
+
+    )
+)

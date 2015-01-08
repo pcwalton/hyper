@@ -12,7 +12,7 @@ Hyper is a fast, modern HTTP implementation written in and for Rust. It
 is a low-level typesafe abstraction over raw HTTP, providing an elegant
 layer over "stringly-typed" HTTP.
 
-Hyper offers both an HTTP/S client an HTTP server which can be used to drive
+Hyper offers both an HTTP/S client and HTTP server which can be used to drive
 complex web applications written entirely in Rust.
 
 The documentation is located at [http://hyperium.github.io/hyper](http://hyperium.github.io/hyper).
@@ -25,14 +25,11 @@ in non-backwards-compatible ways without warning.__
 Hello World Server:
 
 ```rust
-fn hello(mut incoming: Incoming) {
-    for conn in incoming {
-        let (_, mut res) = conn.open().unwrap();
-        *res.status_mut() = status::Ok;
-        let mut res = res.start().unwrap();
-        res.write(b"Hello World!");
-        res.end().unwrap();
-    }
+fn hello(_: Request, res: Response<Fresh>) {
+    *res.status_mut() = status::Ok;
+    let mut res = res.start().unwrap();
+    res.write(b"Hello World!");
+    res.end().unwrap();
 }
 
 fn main() {
@@ -45,18 +42,18 @@ Client:
 
 ```rust
 fn main() {
+    // Create a client.
+    let mut client = Client::new();
+
     // Creating an outgoing request.
-    let mut req = Request::get(Url::parse("http://www.gooogle.com/")).unwrap();
+    let mut res = client.get("http://www.gooogle.com/")
+        // set a header
+        .header(Connection(vec![Close]))
+        // let 'er go!
+        .send();
 
-    // Setting a header.
-    req.headers_mut().set(Foo);
-
-    // Start the Request, writing headers and starting streaming.
-    let res = req.start().unwrap()
-        // Send the Request.
-        .send().unwrap()
-        // Read the Response.
-        .read_to_string().unwrap()
+    // Read the Response.
+    let body = res.read_to_string().unwrap();
 
     println!("Response: {}", res);
 }
@@ -67,22 +64,20 @@ fn main() {
 [Client Bench:](./benches/client.rs)
 
 ```
-
 running 3 tests
-test bench_curl  ... bench:    298416 ns/iter (+/- 132455)
-test bench_http  ... bench:    292725 ns/iter (+/- 167575)
-test bench_hyper ... bench:    222819 ns/iter (+/- 86615)
+test bench_curl  ... bench:    400253 ns/iter (+/- 143539)
+test bench_hyper ... bench:    181703 ns/iter (+/- 46529)
 
-test result: ok. 0 passed; 0 failed; 0 ignored; 3 measured
+test result: ok. 0 passed; 0 failed; 0 ignored; 2 measured
 ```
 
 [Mock Client Bench:](./benches/client_mock_tcp.rs)
 
 ```
 running 3 tests
-test bench_mock_curl  ... bench:     25254 ns/iter (+/- 2113)
-test bench_mock_http  ... bench:     43585 ns/iter (+/- 1206)
-test bench_mock_hyper ... bench:     27153 ns/iter (+/- 2227)
+test bench_mock_curl  ... bench:     53987 ns/iter (+/- 1735)
+test bench_mock_http  ... bench:     43569 ns/iter (+/- 1409)
+test bench_mock_hyper ... bench:     20996 ns/iter (+/- 1742)
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 3 measured
 ```

@@ -1,11 +1,15 @@
 use header::{Header, HeaderFormat};
 use std::fmt::{mod, Show};
+use std::str::FromStr;
 use super::util::{from_comma_delimited, fmt_comma_delimited};
-use std::from_str::FromStr;
+
+use self::Protocol::{WebSocket, ProtocolExt};
 
 /// The `Upgrade` header.
 #[deriving(Clone, PartialEq, Show)]
-pub struct Upgrade(Vec<Protocol>);
+pub struct Upgrade(pub Vec<Protocol>);
+
+deref!(Upgrade -> Vec<Protocol>)
 
 /// Protocol values that can appear in the Upgrade header.
 #[deriving(Clone, PartialEq)]
@@ -52,4 +56,3 @@ impl HeaderFormat for Upgrade {
 }
 
 bench_header!(bench, Upgrade, { vec![b"HTTP/2.0, RTA/x11, websocket".to_vec()] })
-

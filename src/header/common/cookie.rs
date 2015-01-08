@@ -1,7 +1,6 @@
 use header::{Header, HeaderFormat};
 use std::fmt::{mod, Show};
-use std::str::from_utf8;
-use std::from_str::from_str;
+use std::str::{from_utf8, from_str};
 
 use cookie::Cookie;
 use cookie::CookieJar;
@@ -16,6 +15,8 @@ use cookie::CookieJar;
 /// > attach more than one Cookie header field.
 #[deriving(Clone, PartialEq, Show)]
 pub struct Cookies(pub Vec<Cookie>);
+
+deref!(Cookies -> Vec<Cookie>)
 
 impl Header for Cookies {
     fn header_name(_: Option<Cookies>) -> &'static str {
@@ -65,10 +66,16 @@ impl Cookies {
     /// to manipulate cookies and create a corresponding `SetCookie` header afterwards.
     pub fn to_cookie_jar(&self, key: &[u8]) -> CookieJar<'static> {
         let mut jar = CookieJar::new(key);
-        for cookie in self.0.iter() {
-            jar.add_original((*cookie).clone());
+        for cookie in self.iter() {
+            jar.add_original(cookie.clone());
         }
         jar
+    }
+
+    /// Extracts all cookies from `CookieJar` and creates Cookie header. 
+    /// Useful for clients.
+    pub fn from_cookie_jar(jar: &CookieJar) -> Cookies {
+        Cookies(jar.iter().collect())
     }
 }
 
@@ -94,5 +101,16 @@ fn test_fmt() {
 
     assert_eq!(headers.to_string()[], "Cookie: foo=bar; baz=quux\r\n");
 }
+
+#[test]
+fn cookie_jar() {
+    let cookie = Cookie::new("foo".to_string(), "bar".to_string());
+    let cookies = Cookies(vec![cookie]);
+    let jar = cookies.to_cookie_jar(&[]);
+    let new_cookies = Cookies::from_cookie_jar(&jar);
+
+    assert_eq!(cookies, new_cookies);
+}
+
 
 bench_header!(bench, Cookies, { vec![b"foo=bar; baz=quux".to_vec()] })

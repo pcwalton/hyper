@@ -1,7 +1,9 @@
 use header::{Header, HeaderFormat};
 use std::fmt;
-use std::from_str::FromStr;
+use std::str::FromStr;
 use super::util::{from_comma_delimited, fmt_comma_delimited};
+
+use self::Encoding::{Chunked, Gzip, Deflate, Compress, EncodingExt};
 
 /// The `Transfer-Encoding` header.
 ///
@@ -19,12 +21,15 @@ use super::util::{from_comma_delimited, fmt_comma_delimited};
 #[deriving(Clone, PartialEq, Show)]
 pub struct TransferEncoding(pub Vec<Encoding>);
 
+deref!(TransferEncoding -> Vec<Encoding>)
+
 /// A value to be used with the `Transfer-Encoding` header.
 ///
 /// Example:
 ///
 /// ```
-/// # use hyper::header::common::transfer_encoding::{TransferEncoding, Gzip, Chunked};
+/// # use hyper::header::TransferEncoding;
+/// # use hyper::header::transfer_encoding::Encoding::{Gzip, Chunked};
 /// # use hyper::header::Headers;
 /// # let mut headers = Headers::new();
 /// headers.set(TransferEncoding(vec![Gzip, Chunked]));
@@ -32,7 +37,6 @@ pub struct TransferEncoding(pub Vec<Encoding>);
 pub enum Encoding {
     /// The `chunked` encoding.
     Chunked,
-
     /// The `gzip` encoding.
     Gzip,
     /// The `deflate` encoding.
@@ -73,17 +77,15 @@ impl Header for TransferEncoding {
     }
 
     fn parse_header(raw: &[Vec<u8>]) -> Option<TransferEncoding> {
-        from_comma_delimited(raw).map(|vec| TransferEncoding(vec))
+        from_comma_delimited(raw).map(TransferEncoding)
     }
 }
 
 impl HeaderFormat for TransferEncoding {
     fn fmt_header(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let TransferEncoding(ref parts) = *self;
-        fmt_comma_delimited(fmt, parts[])
+        fmt_comma_delimited(fmt, self[])
     }
 }
 
 bench_header!(normal, TransferEncoding, { vec![b"chunked, gzip".to_vec()] })
 bench_header!(ext, TransferEncoding, { vec![b"ext".to_vec()] })
-

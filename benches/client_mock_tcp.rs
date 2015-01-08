@@ -6,7 +6,7 @@ extern crate hyper;
 extern crate test;
 
 use std::fmt::{mod, Show};
-use std::from_str::from_str;
+use std::str::from_str;
 use std::io::{IoResult, MemReader};
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
 use std::os;
@@ -55,7 +55,7 @@ impl Writer for MockStream {
 
 #[bench]
 fn bench_mock_curl(b: &mut test::Bencher) {
-    let mut cwd = os::getcwd();
+    let mut cwd = os::getcwd().unwrap();
     cwd.push("README.md");
     let s = format!("file://{}", cwd.container_as_str().unwrap());
     let url = s.as_slice();
@@ -68,6 +68,7 @@ fn bench_mock_curl(b: &mut test::Bencher) {
     });
 }
 
+#[deriving(Clone)]
 struct Foo;
 
 impl hyper::header::Header for Foo {
@@ -91,8 +92,10 @@ impl net::NetworkStream for MockStream {
     }
 }
 
-impl net::NetworkConnector for MockStream {
-    fn connect<To: ToSocketAddr>(_addr: To, _scheme: &str) -> IoResult<MockStream> {
+struct MockConnector;
+
+impl net::NetworkConnector<MockStream> for MockConnector {
+    fn connect(&mut self, _: &str, _: u16, _: &str) -> IoResult<MockStream> {
         Ok(MockStream::new())
     }
 
@@ -102,8 +105,9 @@ impl net::NetworkConnector for MockStream {
 fn bench_mock_hyper(b: &mut test::Bencher) {
     let url = "http://127.0.0.1:1337/";
     b.iter(|| {
-        let mut req = hyper::client::Request::with_stream::<MockStream>(
-            hyper::Get, hyper::Url::parse(url).unwrap()).unwrap();
+        let mut req = hyper::client::Request::with_connector(
+            hyper::Get, hyper::Url::parse(url).unwrap(), &mut MockConnector
+        ).unwrap();
         req.headers_mut().set(Foo);
 
         req
