@@ -8,7 +8,7 @@ authors = ["Sean McArthur <sean.monstar@gmail.com>"]
 git = "https://github.com/servo/rust-url"
 
 [dependencies.openssl]
-git = "https://github.com/servo/rust-openssl"
+git = "https://github.com/sfackler/rust-openssl"
 
 [dependencies.mime]
 git = "https://github.com/hyperium/mime.rs"
@@ -29,4 +29,4 @@ git = "https://github.com/carllerche/curl-rust"
 git = "https://github.com/chris-morgan/rust-http"
 
 [dependencies.cookie]
-git = "https://github.com/servo/cookie-rs"
+git = "https://github.com/alexcrichton/cookie-rs"
