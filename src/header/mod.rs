@@ -6,11 +6,9 @@
 //! are already provided, such as `Host`, `ContentType`, `UserAgent`, and others.
 use std::any::Any;
 use std::ascii::{AsciiExt, AsciiCast};
-use std::borrow::Cow::{Borrowed, Owned};
 use std::fmt::{mod, Show};
 use std::intrinsics::TypeId;
 use std::raw::TraitObject;
-use std::str::SendStr;
 use std::collections::HashMap;
 use std::collections::hash_map::{Entries, Occupied, Vacant};
 use std::{hash, mem};
@@ -128,7 +126,7 @@ impl Headers {
             match try!(http::read_header(rdr)) {
                 Some((name, value)) => {
                     debug!("raw header: {}={}", name, value[].to_ascii());
-                    let name = CaseInsensitive(Owned(name));
+                    let name = CaseInsensitive(name);
                     let mut item = match headers.data.entry(name) {
                         Vacant(entry) => entry.set(MuCell::new(Item::raw(vec![]))),
                         Occupied(entry) => entry.into_mut()
@@ -150,7 +148,7 @@ impl Headers {
     ///
     /// The field is determined by the type of the value being set.
     pub fn set<H: Header + HeaderFormat>(&mut self, value: H) {
-        self.data.insert(CaseInsensitive(Borrowed(header_name::<H>())),
+        self.data.insert(CaseInsensitive(header_name::<H>().into_string()),
                          MuCell::new(Item::typed(box value as Box<HeaderFormat + Send + Sync>)));
     }
 
@@ -168,7 +166,7 @@ impl Headers {
     pub fn get_raw(&self, name: &str) -> Option<&[Vec<u8>]> {
         self.data
             // FIXME(reem): Find a better way to do this lookup without find_equiv.
-            .get(&CaseInsensitive(Borrowed(unsafe { mem::transmute::<&str, &str>(name) })))
+            .get(&CaseInsensitive(name.into_string()))
             .and_then(|item| {
                 if let Some(ref raw) = item.borrow().raw {
                     return unsafe { mem::transmute(Some(raw[])) };
@@ -195,8 +193,8 @@ impl Headers {
     /// # let mut headers = Headers::new();
     /// headers.set_raw("content-length", vec!["5".as_bytes().to_vec()]);
     /// ```
-    pub fn set_raw<K: IntoCow<'static, String, str>>(&mut self, name: K, value: Vec<Vec<u8>>) {
-        self.data.insert(CaseInsensitive(name.into_cow()), MuCell::new(Item::raw(value)));
+    pub fn set_raw(&mut self, name: String, value: Vec<Vec<u8>>) {
+        self.data.insert(CaseInsensitive(name), MuCell::new(Item::raw(value)));
     }
 
     /// Get a reference to the header field's value, if it exists.
@@ -216,11 +214,11 @@ impl Headers {
     }
 
     fn get_or_parse<H: Header + HeaderFormat>(&self) -> Option<&MuCell<Item>> {
-        self.data.get(&CaseInsensitive(Borrowed(header_name::<H>()))).and_then(get_or_parse::<H>)
+        self.data.get(&CaseInsensitive(header_name::<H>().into_string())).and_then(get_or_parse::<H>)
     }
 
     fn get_or_parse_mut<H: Header + HeaderFormat>(&mut self) -> Option<&mut MuCell<Item>> {
-        self.data.get_mut(&CaseInsensitive(Borrowed(header_name::<H>()))).and_then(get_or_parse_mut::<H>)
+        self.data.get_mut(&CaseInsensitive(header_name::<H>().into_string())).and_then(get_or_parse_mut::<H>)
     }
 
     /// Returns a boolean of whether a certain header is in the map.
@@ -234,13 +232,13 @@ impl Headers {
     /// let has_type = headers.has::<ContentType>();
     /// ```
     pub fn has<H: Header + HeaderFormat>(&self) -> bool {
-        self.data.contains_key(&CaseInsensitive(Borrowed(header_name::<H>())))
+        self.data.contains_key(&CaseInsensitive(header_name::<H>().into_string()))
     }
 
     /// Removes a header from the map, if one existed.
     /// Returns true if a header has been removed.
     pub fn remove<H: Header + HeaderFormat>(&mut self) -> bool {
-        self.data.remove(&CaseInsensitive(Borrowed(Header::header_name(None::<H>)))).is_some()
+        self.data.remove(&CaseInsensitive(Header::header_name(None::<H>).into_string())).is_some()
     }
 
     /// Returns an iterator over the header fields.
@@ -291,7 +289,7 @@ impl<'a> HeaderView<'a> {
     /// Check if a HeaderView is a certain Header.
     #[inline]
     pub fn is<H: Header>(&self) -> bool {
-        CaseInsensitive(header_name::<H>().into_cow()) == *self.0
+        CaseInsensitive(header_name::<H>().into_string()) == *self.0
     }
 
     /// Get the Header name as a slice.
@@ -446,14 +444,8 @@ impl fmt::Show for Box<HeaderFormat + Send + Sync> {
     }
 }
 
-//#[deriving(Clone)]
-struct CaseInsensitive(SendStr);
-
-impl Clone for CaseInsensitive {
-    fn clone(&self) -> CaseInsensitive {
-        CaseInsensitive((*self.0).clone().into_cow())
-    }
-}
+#[deriving(Clone)]
+struct CaseInsensitive(String);
 
 impl Str for CaseInsensitive {
     fn as_slice(&self) -> &str {
