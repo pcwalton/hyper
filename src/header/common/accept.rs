@@ -14,12 +14,16 @@ use mime::Mime;
 /// ```
 /// # use hyper::header::Headers;
 /// # use hyper::header::common::Accept;
-/// use hyper::mime::{Mime, Text, Html, Xml};
+/// use hyper::mime::Mime;
+/// use hyper::mime::TopLevel::Text;
+/// use hyper::mime::SubLevel::{Html, Xml};
 /// # let mut headers = Headers::new();
 /// headers.set(Accept(vec![ Mime(Text, Html, vec![]), Mime(Text, Xml, vec![]) ]));
 /// ```
 #[deriving(Clone, PartialEq, Show)]
 pub struct Accept(pub Vec<Mime>);
+
+deref!(Accept -> Vec<Mime>)
 
 impl Header for Accept {
     fn header_name(_: Option<Accept>) -> &'static str {

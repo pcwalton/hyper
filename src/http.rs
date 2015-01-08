@@ -1,17 +1,26 @@
 //! Pieces pertaining to the HTTP message protocol.
+use std::borrow::Cow::{Borrowed, Owned};
 use std::cmp::min;
 use std::fmt;
-use std::io::{mod, Reader, IoResult};
-use std::str;
+use std::io::{mod, Reader, IoResult, BufWriter};
+use std::num::from_u16;
+use std::str::{mod, SendStr};
 
 use url::Url;
+use url::ParseError as UrlError;
 
 use method;
-use status;
+use status::StatusCode;
 use uri;
-use version::{HttpVersion, Http09, Http10, Http11, Http20};
-use {HttpResult, HttpMethodError, HttpVersionError, HttpIoError, HttpUriError};
-use {HttpHeaderError, HttpStatusError};
+use uri::RequestUri::{AbsolutePath, AbsoluteUri, Authority, Star};
+use version::HttpVersion;
+use version::HttpVersion::{Http09, Http10, Http11, Http20};
+use HttpError::{HttpHeaderError, HttpIoError, HttpMethodError, HttpStatusError,
+                HttpUriError, HttpVersionError};
+use HttpResult;
+
+use self::HttpReader::{SizedReader, ChunkedReader, EofReader, EmptyReader};
+use self::HttpWriter::{ThroughWriter, ChunkedWriter, SizedWriter, EmptyWriter};
 
 /// Readers to handle different Transfer-Encodings.
 ///
@@ -23,6 +32,7 @@ pub enum HttpReader<R> {
     /// A Reader used when Transfer-Encoding is `chunked`.
     ChunkedReader(R, Option<uint>),
     /// A Reader used for responses that don't indicate a length or chunked.
+    ///
     /// Note: This should only used for `Response`s. It is illegal for a
     /// `Request` to be made with both `Content-Length` and
     /// `Transfer-Encoding: chunked` missing, as explained from the spec:
@@ -36,6 +46,10 @@ pub enum HttpReader<R> {
     /// > reliably; the server MUST respond with the 400 (Bad Request)
     /// > status code and then close the connection.
     EofReader(R),
+    /// A Reader used for messages that should never have a body.
+    ///
+    /// See https://tools.ietf.org/html/rfc7230#section-3.3.3
+    EmptyReader(R),
 }
 
 impl<R: Reader> HttpReader<R> {
@@ -46,6 +60,7 @@ impl<R: Reader> HttpReader<R> {
             SizedReader(r, _) => r,
             ChunkedReader(r, _) => r,
             EofReader(r) => r,
+            EmptyReader(r) => r,
         }
     }
 }
@@ -76,6 +91,8 @@ impl<R: Reader> Reader for HttpReader<R> {
                 debug!("Chunked read, remaining={}", rem);
 
                 if rem == 0 {
+                    *opt_remaining = Some(0);
+
                     // chunk of size 0 signals the end of the chunked stream
                     // if the 0 digit was missing from the stream, it would
                     // be an InvalidInput error instead.
@@ -97,7 +114,8 @@ impl<R: Reader> Reader for HttpReader<R> {
             },
             EofReader(ref mut body) => {
                 body.read(buf)
-            }
+            },
+            EmptyReader(_) => Err(io::standard_error(io::EndOfFile))
         }
     }
 }
@@ -173,6 +191,31 @@ impl<W: Writer> HttpWriter<W> {
         }
     }
 
+    /// Access the inner Writer.
+    #[inline]
+    pub fn get_ref<'a>(&'a self) -> &'a W {
+        match *self {
+            ThroughWriter(ref w) => w,
+            ChunkedWriter(ref w) => w,
+            SizedWriter(ref w, _) => w,
+            EmptyWriter(ref w) => w,
+        }
+    }
+
+    /// Access the inner Writer mutably.
+    ///
+    /// Warning: You should not write to this directly, as you can corrupt
+    /// the state.
+    #[inline]
+    pub fn get_mut<'a>(&'a mut self) -> &'a mut W {
+        match *self {
+            ThroughWriter(ref mut w) => w,
+            ChunkedWriter(ref mut w) => w,
+            SizedWriter(ref mut w, _) => w,
+            EmptyWriter(ref mut w) => w,
+        }
+    }
+
     /// Ends the HttpWriter, and returns the underlying Writer.
     ///
     /// A final `write()` is called with an empty message, and then flushed.
@@ -192,6 +235,7 @@ impl<W: Writer> Writer for HttpWriter<W> {
             ThroughWriter(ref mut w) => w.write(msg),
             ChunkedWriter(ref mut w) => {
                 let chunk_size = msg.len();
+                debug!("chunked write, size = {}", chunk_size);
                 try!(write!(w, "{:X}{}{}", chunk_size, CR as char, LF as char));
                 try!(w.write(msg));
                 w.write(LINE_ENDING)
@@ -243,6 +287,8 @@ pub const LINE_ENDING: &'static [u8] = &[CR, LF];
 /// A `Show`able struct to easily write line endings to a formatter.
 pub struct LineEnding;
 
+impl Copy for LineEnding {}
+
 impl fmt::Show for LineEnding {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.write(LINE_ENDING)
@@ -290,25 +336,31 @@ pub fn is_token(b: u8) -> bool {
     }
 }
 
-/// Read bytes from `stream` into `buf` until a space is encountered.
+/// Read token bytes from `stream` into `buf` until a space is encountered.
 /// Returns `Ok(true)` if we read until a space,
 /// `Ok(false)` if we got to the end of `buf` without encountering a space,
 /// otherwise returns any error encountered reading the stream.
 ///
 /// The remaining contents of `buf` are left untouched.
-fn read_until_space<R: Reader>(stream: &mut R, buf: &mut [u8]) -> HttpResult<bool> {
+fn read_token_until_space<R: Reader>(stream: &mut R, buf: &mut [u8]) -> HttpResult<bool> {
     use std::io::BufWriter;
     let mut bufwrt = BufWriter::new(buf);
 
     loop {
-        let byte = try_io!(stream.read_byte());
+        let byte = try!(stream.read_byte());
 
         if byte == SP {
-            break
+            break;
+        } else if !is_token(byte) {
+            return Err(HttpMethodError);
         // Read to end but there's still more
         } else if bufwrt.write_u8(byte).is_err() {
-            return Ok(false)
+            return Ok(false);
         }
+    }
+
+    if bufwrt.tell().unwrap() == 0 {
+        return Err(HttpMethodError);
     }
 
     Ok(true)
@@ -320,22 +372,22 @@ fn read_until_space<R: Reader>(stream: &mut R, buf: &mut [u8]) -> HttpResult<boo
 pub fn read_method<R: Reader>(stream: &mut R) -> HttpResult<method::Method> {
     let mut buf = [SP, ..16];
 
-    if !try!(read_until_space(stream, &mut buf)) {
-        return Err(HttpMethodError); 
+    if !try!(read_token_until_space(stream, &mut buf)) {
+        return Err(HttpMethodError);
     }
 
     debug!("method buf = {}", buf[].to_ascii());
-    
+
     let maybe_method = match buf[0..7] {
-        b"GET    " => Some(method::Get),
-        b"PUT    " => Some(method::Put),
-        b"POST   " => Some(method::Post),
-        b"HEAD   " => Some(method::Head),
-        b"PATCH  " => Some(method::Patch),
-        b"TRACE  " => Some(method::Trace),
-        b"DELETE " => Some(method::Delete),
-        b"CONNECT" => Some(method::Connect),
-        b"OPTIONS" => Some(method::Options),
+        b"GET    " => Some(method::Method::Get),
+        b"PUT    " => Some(method::Method::Put),
+        b"POST   " => Some(method::Method::Post),
+        b"HEAD   " => Some(method::Method::Head),
+        b"PATCH  " => Some(method::Method::Patch),
+        b"TRACE  " => Some(method::Method::Trace),
+        b"DELETE " => Some(method::Method::Delete),
+        b"CONNECT" => Some(method::Method::Connect),
+        b"OPTIONS" => Some(method::Method::Options),
         _ => None,
     };
 
@@ -343,40 +395,33 @@ pub fn read_method<R: Reader>(stream: &mut R) -> HttpResult<method::Method> {
 
     match (maybe_method, buf[]) {
         (Some(method), _) => Ok(method),
-        (None, ext) if is_valid_method(buf) => {
-            use std::str::raw;
+        (None, ext) => {
             // We already checked that the buffer is ASCII
-            Ok(method::Extension(unsafe { raw::from_utf8(ext) }.trim().into_string()))
+            Ok(method::Method::Extension(unsafe { str::from_utf8_unchecked(ext) }.trim().into_string()))
         },
-        _ => Err(HttpMethodError)
     }
-}
-
-fn is_valid_method(buf: &[u8]) -> bool {
-    use std::char;
-    buf.iter().all(|&ch| char::is_uppercase(ch as char) || ch == SP)
 }
 
 /// Read a `RequestUri` from a raw stream.
 pub fn read_uri<R: Reader>(stream: &mut R) -> HttpResult<uri::RequestUri> {
-    let mut b = try_io!(stream.read_byte());
+    let mut b = try!(stream.read_byte());
     while b == SP {
-        b = try_io!(stream.read_byte());
+        b = try!(stream.read_byte());
     }
 
     let mut s = String::new();
     if b == STAR {
         try!(expect(stream.read_byte(), SP));
-        return Ok(uri::Star)
+        return Ok(Star)
     } else {
         s.push(b as char);
         loop {
-            match try_io!(stream.read_byte()) {
+            match try!(stream.read_byte()) {
                 SP => {
                     break;
                 },
                 CR | LF => {
-                    return Err(HttpUriError)
+                    return Err(HttpUriError(UrlError::InvalidCharacter))
                 },
                 b => s.push(b as char)
             }
@@ -386,28 +431,15 @@ pub fn read_uri<R: Reader>(stream: &mut R) -> HttpResult<uri::RequestUri> {
     debug!("uri buf = {}", s);
 
     if s.as_slice().starts_with("/") {
-        Ok(uri::AbsolutePath(s))
+        Ok(AbsolutePath(s))
     } else if s.as_slice().contains("/") {
-        match Url::parse(s.as_slice()) {
-            Ok(u) => Ok(uri::AbsoluteUri(u)),
-            Err(_e) => {
-                debug!("URL err {}", _e);
-                Err(HttpUriError)
-            }
-        }
+        Ok(AbsoluteUri(try!(Url::parse(s.as_slice()))))
     } else {
         let mut temp = "http://".to_string();
         temp.push_str(s.as_slice());
-        match Url::parse(temp.as_slice()) {
-            Ok(_u) => {
-                todo!("compare vs u.authority()");
-                Ok(uri::Authority(s))
-            }
-            Err(_e) => {
-                debug!("URL err {}", _e);
-                Err(HttpUriError)
-            }
-        }
+        try!(Url::parse(temp.as_slice()));
+        todo!("compare vs u.authority()");
+        Ok(Authority(s))
     }
 
 
@@ -422,7 +454,7 @@ pub fn read_http_version<R: Reader>(stream: &mut R) -> HttpResult<HttpVersion> {
     try!(expect(stream.read_byte(), b'P'));
     try!(expect(stream.read_byte(), b'/'));
 
-    match try_io!(stream.read_byte()) {
+    match try!(stream.read_byte()) {
         b'0' => {
             try!(expect(stream.read_byte(), b'.'));
             try!(expect(stream.read_byte(), b'9'));
@@ -430,7 +462,7 @@ pub fn read_http_version<R: Reader>(stream: &mut R) -> HttpResult<HttpVersion> {
         },
         b'1' => {
             try!(expect(stream.read_byte(), b'.'));
-            match try_io!(stream.read_byte()) {
+            match try!(stream.read_byte()) {
                 b'0' => Ok(Http10),
                 b'1' => Ok(Http11),
                 _ => Err(HttpVersionError)
@@ -445,10 +477,13 @@ pub fn read_http_version<R: Reader>(stream: &mut R) -> HttpResult<HttpVersion> {
     }
 }
 
+const MAX_HEADER_NAME_LENGTH: uint = 100;
+const MAX_HEADER_FIELD_LENGTH: uint = 1000;
+
 /// The raw bytes when parsing a header line.
 ///
 /// A String and Vec<u8>, divided by COLON (`:`). The String is guaranteed
-/// to be all `token`s. See `is_token_char` source for all valid characters.
+/// to be all `token`s. See `is_token` source for all valid characters.
 pub type RawHeaderLine = (String, Vec<u8>);
 
 /// Read a RawHeaderLine from a Reader.
@@ -476,15 +511,18 @@ pub fn read_header<R: Reader>(stream: &mut R) -> HttpResult<Option<RawHeaderLine
     let mut value = vec![];
 
     loop {
-        match try_io!(stream.read_byte()) {
+        match try!(stream.read_byte()) {
             CR if name.len() == 0 => {
-                match try_io!(stream.read_byte()) {
+                match try!(stream.read_byte()) {
                     LF => return Ok(None),
                     _ => return Err(HttpHeaderError)
                 }
             },
             b':' => break,
-            b if is_token(b) => name.push(b as char),
+            b if is_token(b) => {
+                if name.len() > MAX_HEADER_NAME_LENGTH { return Err(HttpHeaderError); }
+                name.push(b as char)
+            },
             _nontoken => return Err(HttpHeaderError)
         };
     }
@@ -495,20 +533,21 @@ pub fn read_header<R: Reader>(stream: &mut R) -> HttpResult<Option<RawHeaderLine
 
     todo!("handle obs-folding (gross!)");
     loop {
-        match try_io!(stream.read_byte()) {
+        match try!(stream.read_byte()) {
             CR => break,
             LF => return Err(HttpHeaderError),
             b' ' if ows => {},
             b => {
                 ows = false;
+                if value.len() > MAX_HEADER_FIELD_LENGTH { return Err(HttpHeaderError); }
                 value.push(b)
             }
         };
     }
 
-    debug!("header value = {}", value);
+    debug!("header value = {}", value[].to_ascii());
 
-    match try_io!(stream.read_byte()) {
+    match try!(stream.read_byte()) {
         LF => Ok(Some((name, value))),
         _ => Err(HttpHeaderError)
     }
@@ -528,10 +567,10 @@ pub fn read_request_line<R: Reader>(stream: &mut R) -> HttpResult<RequestLine> {
     let version = try!(read_http_version(stream));
     debug!("version = {}", version);
 
-    if try_io!(stream.read_byte()) != CR {
+    if try!(stream.read_byte()) != CR {
         return Err(HttpVersionError);
     }
-    if try_io!(stream.read_byte()) != LF {
+    if try!(stream.read_byte()) != LF {
         return Err(HttpVersionError);
     }
 
@@ -541,7 +580,17 @@ pub fn read_request_line<R: Reader>(stream: &mut R) -> HttpResult<RequestLine> {
 /// `status-line = HTTP-version SP status-code SP reason-phrase CRLF`
 ///
 /// However, reason-phrase is absolutely useless, so its tossed.
-pub type StatusLine = (HttpVersion, status::StatusCode);
+pub type StatusLine = (HttpVersion, RawStatus);
+
+/// The raw status code and reason-phrase.
+#[deriving(PartialEq, Show)]
+pub struct RawStatus(pub u16, pub SendStr);
+
+impl Clone for RawStatus {
+    fn clone(&self) -> RawStatus {
+        RawStatus(self.0, (*self.1).clone().into_cow())
+    }
+}
 
 /// Read the StatusLine, such as `HTTP/1.1 200 OK`.
 ///
@@ -557,7 +606,7 @@ pub type StatusLine = (HttpVersion, status::StatusCode);
 /// >```
 pub fn read_status_line<R: Reader>(stream: &mut R) -> HttpResult<StatusLine> {
     let version = try!(read_http_version(stream));
-    if try_io!(stream.read_byte()) != SP {
+    if try!(stream.read_byte()) != SP {
         return Err(HttpVersionError);
     }
     let code = try!(read_status(stream));
@@ -566,33 +615,72 @@ pub fn read_status_line<R: Reader>(stream: &mut R) -> HttpResult<StatusLine> {
 }
 
 /// Read the StatusCode from a stream.
-pub fn read_status<R: Reader>(stream: &mut R) -> HttpResult<status::StatusCode> {
+pub fn read_status<R: Reader>(stream: &mut R) -> HttpResult<RawStatus> {
     let code = [
-        try_io!(stream.read_byte()),
-        try_io!(stream.read_byte()),
-        try_io!(stream.read_byte()),
+        try!(stream.read_byte()),
+        try!(stream.read_byte()),
+        try!(stream.read_byte()),
     ];
 
     let code = match str::from_utf8(code.as_slice()).and_then(from_str::<u16>) {
-        Some(num) => match FromPrimitive::from_u16(num) {
-            Some(code) => code,
-            None => return Err(HttpStatusError)
+        Some(num) => num,
+        None => return Err(HttpStatusError)
+    };
+
+    match try!(stream.read_byte()) {
+        b' ' => (),
+        _ => return Err(HttpStatusError)
+    }
+
+    let mut buf = [b' ', ..32];
+
+    {
+        let mut bufwrt = BufWriter::new(&mut buf);
+        'read: loop {
+            match try!(stream.read_byte()) {
+                CR => match try!(stream.read_byte()) {
+                    LF => break,
+                    _ => return Err(HttpStatusError)
+                },
+                b => match bufwrt.write_u8(b) {
+                    Ok(_) => (),
+                    Err(_) => {
+                        for _ in range(0u, 128) {
+                            match try!(stream.read_byte()) {
+                                CR => match try!(stream.read_byte()) {
+                                    LF => break 'read,
+                                    _ => return Err(HttpStatusError)
+                                },
+                                _ => { /* ignore */ }
+                            }
+                        }
+                        return Err(HttpStatusError)
+                    }
+                }
+            }
+        }
+    }
+
+    let reason = match str::from_utf8(buf[]) {
+        Some(s) => s.trim(),
+        None => return Err(HttpStatusError)
+    };
+
+    let reason = match from_u16::<StatusCode>(code) {
+        Some(status) => match status.canonical_reason() {
+            Some(phrase) => {
+                if phrase == reason {
+                    Borrowed(phrase)
+                } else {
+                    Owned(reason.into_string())
+                }
+            }
+            _ => Owned(reason.into_string())
         },
         None => return Err(HttpStatusError)
     };
 
-    // reason is purely for humans, so just consume it till we get to CRLF
-    loop {
-        match try_io!(stream.read_byte()) {
-            CR => match try_io!(stream.read_byte()) {
-                LF => break,
-                _ => return Err(HttpStatusError)
-            },
-            _ => ()
-        }
-    }
-
-    Ok(code)
+    Ok(RawStatus(code, reason))
 }
 
 #[inline]
@@ -607,35 +695,41 @@ fn expect(r: IoResult<u8>, expected: u8) -> HttpResult<()> {
 #[cfg(test)]
 mod tests {
     use std::io::{mod, MemReader, MemWriter};
+    use std::borrow::Cow::{Borrowed, Owned};
     use test::Bencher;
-    use uri::{RequestUri, Star, AbsoluteUri, AbsolutePath, Authority};
+    use uri::RequestUri;
+    use uri::RequestUri::{Star, AbsoluteUri, AbsolutePath, Authority};
     use method;
-    use status;
-    use version::{HttpVersion, Http10, Http11, Http20};
-    use {HttpResult, HttpVersionError};
+    use version::HttpVersion;
+    use version::HttpVersion::{Http10, Http11, Http20};
+    use HttpError::{HttpVersionError, HttpMethodError};
+    use HttpResult;
     use url::Url;
 
-    use super::{read_method, read_uri, read_http_version, read_header, RawHeaderLine, read_status};
+    use super::{read_method, read_uri, read_http_version, read_header,
+                RawHeaderLine, read_status, RawStatus};
 
     fn mem(s: &str) -> MemReader {
         MemReader::new(s.as_bytes().to_vec())
     }
-    
+
     #[test]
     fn test_read_method() {
-        fn read(s: &str, m: method::Method) {
-            assert_eq!(read_method(&mut mem(s)), Ok(m));
+        fn read(s: &str, result: HttpResult<method::Method>) {
+            assert_eq!(read_method(&mut mem(s)), result);
         }
 
-        read("GET /", method::Get);
-        read("POST /", method::Post);
-        read("PUT /", method::Put);
-        read("HEAD /", method::Head);
-        read("OPTIONS /", method::Options);
-        read("CONNECT /", method::Connect);
-        read("TRACE /", method::Trace);
-        read("PATCH /", method::Patch);
-        read("FOO /", method::Extension("FOO".to_string()));
+        read("GET /", Ok(method::Method::Get));
+        read("POST /", Ok(method::Method::Post));
+        read("PUT /", Ok(method::Method::Put));
+        read("HEAD /", Ok(method::Method::Head));
+        read("OPTIONS /", Ok(method::Method::Options));
+        read("CONNECT /", Ok(method::Method::Connect));
+        read("TRACE /", Ok(method::Method::Trace));
+        read("PATCH /", Ok(method::Method::Patch));
+        read("FOO /", Ok(method::Method::Extension("FOO".to_string())));
+        read("akemi!~#HOMURA /", Ok(method::Method::Extension("akemi!~#HOMURA".to_string())));
+        read(" ", Err(HttpMethodError));
     }
 
     #[test]
@@ -667,11 +761,26 @@ mod tests {
 
     #[test]
     fn test_read_status() {
-        fn read(s: &str, result: HttpResult<status::StatusCode>) {
+        fn read(s: &str, result: HttpResult<RawStatus>) {
             assert_eq!(read_status(&mut mem(s)), result);
         }
 
-        read("200 OK\r\n", Ok(status::Ok));
+        fn read_ignore_string(s: &str, result: HttpResult<RawStatus>) {
+            match (read_status(&mut mem(s)), result) {
+                (Ok(RawStatus(ref c1, _)), Ok(RawStatus(ref c2, _))) => {
+                    assert_eq!(c1, c2);
+                },
+                (r1, r2) => assert_eq!(r1, r2)
+            }
+        }
+
+        read("200 OK\r\n", Ok(RawStatus(200, Borrowed("OK"))));
+        read("404 Not Found\r\n", Ok(RawStatus(404, Borrowed("Not Found"))));
+        read("200 crazy pants\r\n", Ok(RawStatus(200, Owned("crazy pants".to_string()))));
+        read("301 Moved Permanently\r\n", Ok(RawStatus(301, Owned("Moved Permanently".to_string()))));
+        read_ignore_string("301 Unreasonably long header that should not happen, \
+                           but some men just want to watch the world burn\r\n",
+             Ok(RawStatus(301, Owned("Ignored".to_string()))));
     }
 
     #[test]
@@ -687,10 +796,10 @@ mod tests {
     #[test]
     fn test_write_chunked() {
         use std::str::from_utf8;
-        let mut w = super::ChunkedWriter(MemWriter::new());
+        let mut w = super::HttpWriter::ChunkedWriter(MemWriter::new());
         w.write(b"foo bar").unwrap();
         w.write(b"baz quux herp").unwrap();
-        let buf = w.end().unwrap().unwrap();
+        let buf = w.end().unwrap().into_inner();
         let s = from_utf8(buf.as_slice()).unwrap();
         assert_eq!(s, "7\r\nfoo bar\r\nD\r\nbaz quux herp\r\n0\r\n\r\n");
     }
@@ -698,11 +807,11 @@ mod tests {
     #[test]
     fn test_write_sized() {
         use std::str::from_utf8;
-        let mut w = super::SizedWriter(MemWriter::new(), 8);
+        let mut w = super::HttpWriter::SizedWriter(MemWriter::new(), 8);
         w.write(b"foo bar").unwrap();
         assert_eq!(w.write(b"baz"), Err(io::standard_error(io::ShortWrite(1))));
 
-        let buf = w.end().unwrap().unwrap();
+        let buf = w.end().unwrap().into_inner();
         let s = from_utf8(buf.as_slice()).unwrap();
         assert_eq!(s, "foo barb");
     }
@@ -710,7 +819,13 @@ mod tests {
     #[bench]
     fn bench_read_method(b: &mut Bencher) {
         b.bytes = b"CONNECT ".len() as u64;
-        b.iter(|| assert_eq!(read_method(&mut mem("CONNECT ")), Ok(method::Connect)));
+        b.iter(|| assert_eq!(read_method(&mut mem("CONNECT ")), Ok(method::Method::Connect)));
+    }
+
+    #[bench]
+    fn bench_read_status(b: &mut Bencher) {
+        b.bytes = b"404 Not Found\r\n".len() as u64;
+        b.iter(|| assert_eq!(read_status(&mut mem("404 Not Found\r\n")), Ok(RawStatus(404, Borrowed("Not Found")))));
     }
 
 }

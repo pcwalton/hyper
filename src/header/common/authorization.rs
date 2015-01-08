@@ -1,12 +1,23 @@
 use std::fmt::{mod, Show};
-use std::from_str::FromStr;
-use std::str::from_utf8;
-use serialize::base64::{ToBase64, FromBase64, Standard, Config};
+use std::str::{FromStr, from_utf8};
+use serialize::base64::{ToBase64, FromBase64, Standard, Config, Newline};
 use header::{Header, HeaderFormat};
 
 /// The `Authorization` header field.
 #[deriving(Clone, PartialEq, Show)]
 pub struct Authorization<S: Scheme>(pub S);
+
+impl<S: Scheme> Deref<S> for Authorization<S> {
+    fn deref<'a>(&'a self) -> &'a S {
+        &self.0
+    }
+}
+
+impl<S: Scheme> DerefMut<S> for Authorization<S> {
+    fn deref_mut<'a>(&'a mut self) -> &'a mut S {
+        &mut self.0
+    }
+}
 
 impl<S: Scheme> Header for Authorization<S> {
     fn header_name(_: Option<Authorization<S>>) -> &'static str {
@@ -40,7 +51,7 @@ impl<S: Scheme> HeaderFormat for Authorization<S> {
 }
 
 /// An Authorization scheme to be used in the header.
-pub trait Scheme: FromStr + Send + Sync {
+pub trait Scheme: FromStr + Clone + Send + Sync {
     /// An optional Scheme name.
     ///
     /// For example, `Basic asdf` has the name `Basic`. The Option<Self> is
@@ -86,6 +97,7 @@ impl Scheme for Basic {
         }
         text.as_bytes().to_base64(Config {
             char_set: Standard,
+            newline: Newline::CRLF,
             pad: true,
             line_length: None
         }).fmt(f)

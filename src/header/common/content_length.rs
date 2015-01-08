@@ -6,8 +6,10 @@ use super::util::from_one_raw_str;
 /// The `Content-Length` header.
 ///
 /// Simply a wrapper around a `uint`.
-#[deriving(Clone, PartialEq, Show)]
+#[deriving(Copy, Clone, PartialEq, Show)]
 pub struct ContentLength(pub uint);
+
+deref!(ContentLength -> uint)
 
 impl Header for ContentLength {
     fn header_name(_: Option<ContentLength>) -> &'static str {
@@ -28,10 +30,10 @@ impl HeaderFormat for ContentLength {
 
 impl ContentLength {
     /// Returns the wrapped length.
+    #[deprecated = "use Deref instead"]
     #[inline]
     pub fn len(&self) -> uint {
-        let ContentLength(len) = *self;
-        len
+        **self
     }
 }
 

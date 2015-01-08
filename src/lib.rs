@@ -1,5 +1,4 @@
-#![feature(macro_rules, phase, default_type_params, if_let, slicing_syntax,
-           tuple_indexing)]
+#![feature(macro_rules, phase, default_type_params, slicing_syntax, globs)]
 #![deny(missing_docs)]
 #![deny(warnings)]
 #![experimental]
@@ -66,10 +65,10 @@
 //!
 //! #### Handler + Server
 //!
-//! A Handler in Hyper just accepts an Iterator of `(Request, Response)` pairs and
-//! does whatever it wants with it. This gives Handlers maximum flexibility to decide
-//! on concurrency strategy and exactly how they want to distribute the work of
-//! dealing with `Request` and `Response.`
+//! A `Handler` in Hyper accepts a `Request` and `Response`. This is where
+//! user-code can handle each connection. The server accepts connections in a
+//! task pool with a customizable number of threads, and passes the Request /
+//! Response to the handler.
 //!
 //! #### Request
 //!
@@ -133,26 +132,25 @@ extern crate openssl;
 #[phase(plugin,link)] extern crate log;
 #[cfg(test)] extern crate test;
 extern crate "unsafe-any" as uany;
-extern crate "move-acceptor" as macceptor;
-extern crate typeable;
 extern crate cookie;
+extern crate mucell;
 
 pub use std::io::net::ip::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr, Port};
 pub use mimewrapper::mime;
 pub use url::Url;
-pub use method::{Get, Head, Post, Delete};
-pub use status::{Ok, BadRequest, NotFound};
+pub use client::Client;
+pub use method::Method::{Get, Head, Post, Delete};
+pub use status::StatusCode::{Ok, BadRequest, NotFound};
 pub use server::Server;
 
 use std::fmt;
+use std::error::{Error, FromError};
 use std::io::IoError;
 
 use std::rt::backtrace;
 
-
-macro_rules! try_io(
-    ($e:expr) => (match $e { Ok(v) => v, Err(e) => return Err(::HttpIoError(e)) })
-)
+use self::HttpError::{HttpMethodError, HttpUriError, HttpVersionError,
+                      HttpHeaderError, HttpStatusError, HttpIoError};
 
 macro_rules! todo(
     ($($arg:tt)*) => (if cfg!(not(ndebug)) {
@@ -166,7 +164,7 @@ struct Trace;
 impl fmt::Show for Trace {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         let _ = backtrace::write(fmt);
-        ::std::result::Ok(())
+        Result::Ok(())
     }
 }
 
@@ -184,6 +182,10 @@ macro_rules! inspect(
     })
 )
 
+#[cfg(test)]
+#[macro_escape]
+mod mock;
+
 pub mod client;
 pub mod method;
 pub mod header;
@@ -194,7 +196,6 @@ pub mod status;
 pub mod uri;
 pub mod version;
 
-#[cfg(test)] mod mock;
 
 mod mimewrapper {
     /// Re-exporting the mime crate, for convenience.
@@ -211,7 +212,7 @@ pub enum HttpError {
     /// An invalid `Method`, such as `GE,T`.
     HttpMethodError,
     /// An invalid `RequestUri`, such as `exam ple.domain`.
-    HttpUriError,
+    HttpUriError(url::ParseError),
     /// An invalid `HttpVersion`, such as `HTP/1.1`
     HttpVersionError,
     /// An invalid `Header`.
@@ -222,12 +223,42 @@ pub enum HttpError {
     HttpIoError(IoError),
 }
 
+impl Error for HttpError {
+    fn description(&self) -> &str {
+        match *self {
+            HttpMethodError => "Invalid Method specified",
+            HttpUriError(_) => "Invalid Request URI specified",
+            HttpVersionError => "Invalid HTTP version specified",
+            HttpHeaderError => "Invalid Header provided",
+            HttpStatusError => "Invalid Status provided",
+            HttpIoError(_) => "An IoError occurred while connecting to the specified network",
+        }
+    }
+
+    fn cause(&self) -> Option<&Error> {
+        match *self {
+            HttpIoError(ref error) => Some(error as &Error),
+            HttpUriError(ref error) => Some(error as &Error),
+            _ => None,
+        }
+    }
+}
+
+impl FromError<IoError> for HttpError {
+    fn from_error(err: IoError) -> HttpError {
+        HttpIoError(err)
+    }
+}
+
+impl FromError<url::ParseError> for HttpError {
+    fn from_error(err: url::ParseError) -> HttpError {
+        HttpUriError(err)
+    }
+}
+
 //FIXME: when Opt-in Built-in Types becomes a thing, we can force these structs
 //to be Send. For now, this has the compiler do a static check.
 fn _assert_send<T: Send>() {
     _assert_send::<client::Request<net::Fresh>>();
     _assert_send::<client::Response>();
-
-    _assert_send::<server::Request>();
-    _assert_send::<server::Response<net::Fresh>>();
 }

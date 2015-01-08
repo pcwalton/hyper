@@ -1,11 +1,15 @@
 use header::{Header, HeaderFormat};
 use std::fmt::{mod, Show};
-use super::{from_comma_delimited, fmt_comma_delimited};
-use std::from_str::FromStr;
+use std::str::FromStr;
+use super::util::{from_comma_delimited, fmt_comma_delimited};
+
+pub use self::ConnectionOption::{KeepAlive, Close, ConnectionHeader};
 
 /// The `Connection` header.
 #[deriving(Clone, PartialEq, Show)]
 pub struct Connection(pub Vec<ConnectionOption>);
+
+deref!(Connection -> Vec<ConnectionOption>)
 
 /// Values that can be in the `Connection` header.
 #[deriving(Clone, PartialEq)]

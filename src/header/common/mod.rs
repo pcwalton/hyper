@@ -7,13 +7,19 @@
 //! is used, such as `ContentType(pub Mime)`.
 
 pub use self::accept::Accept;
+pub use self::allow::Allow;
 pub use self::authorization::Authorization;
+pub use self::cache_control::CacheControl;
 pub use self::cookie::Cookies;
 pub use self::connection::Connection;
 pub use self::content_length::ContentLength;
 pub use self::content_type::ContentType;
 pub use self::date::Date;
+pub use self::etag::Etag;
+pub use self::expires::Expires;
 pub use self::host::Host;
+pub use self::last_modified::LastModified;
+pub use self::if_modified_since::IfModifiedSince;
 pub use self::location::Location;
 pub use self::transfer_encoding::TransferEncoding;
 pub use self::upgrade::Upgrade;
@@ -21,43 +27,46 @@ pub use self::user_agent::UserAgent;
 pub use self::server::Server;
 pub use self::set_cookie::SetCookie;
 
-use std::fmt::{mod, Show};
-use std::from_str::FromStr;
-use std::str::from_utf8;
-
 macro_rules! bench_header(
     ($name:ident, $ty:ty, $value:expr) => {
         #[cfg(test)]
         mod $name {
             use test::Bencher;
-            use std::fmt::{mod, Show};
-
             use super::*;
 
-            use header::{Header, HeaderFormat};
-
-            struct HeaderFormatter($ty);
-
-            impl Show for HeaderFormatter {
-                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                    self.0.fmt_header(f)
-                }
-            }
+            use header::{Header, HeaderFormatter};
 
             #[bench]
             fn bench_parse(b: &mut Bencher) {
                 let val = $value;
                 b.iter(|| {
-                    let _: $ty= Header::parse_header(val[]).unwrap();
+                    let _: $ty = Header::parse_header(val[]).unwrap();
                 });
             }
 
             #[bench]
             fn bench_format(b: &mut Bencher) {
-                let val = HeaderFormatter(Header::parse_header($value[]).unwrap());
+                let val: $ty = Header::parse_header($value[]).unwrap();
+                let fmt = HeaderFormatter(&val);
                 b.iter(|| {
-                    format!("{}", val);
+                    format!("{}", fmt);
                 });
+            }
+        }
+    }
+)
+
+macro_rules! deref(
+    ($from:ty -> $to:ty) => {
+        impl Deref<$to> for $from {
+            fn deref<'a>(&'a self) -> &'a $to {
+                &self.0
+            }
+        }
+
+        impl DerefMut<$to> for $from {
+            fn deref_mut<'a>(&'a mut self) -> &'a mut $to {
+                &mut self.0
             }
         }
     }
@@ -66,8 +75,14 @@ macro_rules! bench_header(
 /// Exposes the Accept header.
 pub mod accept;
 
+/// Exposes the Allow header.
+pub mod allow;
+
 /// Exposes the Authorization header.
 pub mod authorization;
+
+/// Exposes the CacheControl header.
+pub mod cache_control;
 
 /// Exposes the Cookie header.
 pub mod cookie;
@@ -84,8 +99,20 @@ pub mod content_type;
 /// Exposes the Date header.
 pub mod date;
 
+/// Exposes the Etag header.
+pub mod etag;
+
+/// Exposes the Expires header.
+pub mod expires;
+
 /// Exposes the Host header.
 pub mod host;
+
+/// Exposes the LastModified header.
+pub mod last_modified;
+
+/// Exposes the If-Modified-Since header.
+pub mod if_modified_since;
 
 /// Exposes the Location header.
 pub mod location;
@@ -106,30 +133,3 @@ pub mod upgrade;
 pub mod user_agent;
 
 pub mod util;
-
-fn from_comma_delimited<T: FromStr>(raw: &[Vec<u8>]) -> Option<Vec<T>> {
-    if raw.len() != 1 {
-        return None;
-    }
-    // we JUST checked that raw.len() == 1, so raw[0] WILL exist.
-    match from_utf8(unsafe { raw.as_slice().unsafe_get(0).as_slice() }) {
-        Some(s) => {
-            Some(s.as_slice()
-                 .split([',', ' '].as_slice())
-                 .filter_map(from_str)
-                 .collect())
-        }
-        None => None
-    }
-}
-
-fn fmt_comma_delimited<T: Show>(fmt: &mut fmt::Formatter, parts: &[T]) -> fmt::Result {
-    let last = parts.len() - 1;
-    for (i, part) in parts.iter().enumerate() {
-        try!(part.fmt(fmt));
-        if i < last {
-            try!(", ".fmt(fmt));
-        }
-    }
-    Ok(())
-}

@@ -3,14 +3,16 @@ use std::io::{BufferedWriter, IoResult};
 
 use url::Url;
 
-use method::{mod, Get, Post, Delete, Put, Patch, Head, Options};
+use method;
+use method::Method::{Get, Post, Delete, Put, Patch, Head, Options};
 use header::Headers;
 use header::common::{mod, Host};
-use net::{NetworkStream, NetworkConnector, HttpStream, Fresh, Streaming};
-use http::{HttpWriter, ThroughWriter, ChunkedWriter, SizedWriter, EmptyWriter, LINE_ENDING};
+use net::{NetworkStream, NetworkConnector, HttpConnector, Fresh, Streaming};
+use http::{HttpWriter, LINE_ENDING};
+use http::HttpWriter::{ThroughWriter, ChunkedWriter, SizedWriter, EmptyWriter};
 use version;
-use {HttpResult, HttpUriError};
-use client::Response;
+use HttpResult;
+use client::{Response, get_host_and_port};
 
 
 /// A client request to a remote server.
@@ -39,24 +41,16 @@ impl<W> Request<W> {
 impl Request<Fresh> {
     /// Create a new client request.
     pub fn new(method: method::Method, url: Url) -> HttpResult<Request<Fresh>> {
-        Request::with_stream::<HttpStream>(method, url)
+        let mut conn = HttpConnector(None);
+        Request::with_connector(method, url, &mut conn)
     }
 
     /// Create a new client request with a specific underlying NetworkStream.
-    pub fn with_stream<S: NetworkConnector>(method: method::Method, url: Url) -> HttpResult<Request<Fresh>> {
+    pub fn with_connector<C: NetworkConnector<S>, S: NetworkStream>(method: method::Method, url: Url, connector: &mut C) -> HttpResult<Request<Fresh>> {
         debug!("{} {}", method, url);
-        let host = match url.serialize_host() {
-            Some(host) => host,
-            None => return Err(HttpUriError)
-        };
-        debug!("host={}", host);
-        let port = match url.port_or_default() {
-            Some(port) => port,
-            None => return Err(HttpUriError)
-        };
-        debug!("port={}", port);
+        let (host, port) = try!(get_host_and_port(&url));
 
-        let stream: S = try_io!(NetworkConnector::connect((host[], port), url.scheme.as_slice()));
+        let stream: S = try!(connector.connect(host[], port, &*url.scheme));
         let stream = ThroughWriter(BufferedWriter::new(box stream as Box<NetworkStream + Send>));
 
         let mut headers = Headers::new();
@@ -69,37 +63,44 @@ impl Request<Fresh> {
             method: method,
             headers: headers,
             url: url,
-            version: version::Http11,
+            version: version::HttpVersion::Http11,
             body: stream
         })
     }
 
     /// Create a new GET request.
     #[inline]
+    #[deprecated = "use hyper::Client"]
     pub fn get(url: Url) -> HttpResult<Request<Fresh>> { Request::new(Get, url) }
 
     /// Create a new POST request.
     #[inline]
+    #[deprecated = "use hyper::Client"]
     pub fn post(url: Url) -> HttpResult<Request<Fresh>> { Request::new(Post, url) }
 
     /// Create a new DELETE request.
     #[inline]
+    #[deprecated = "use hyper::Client"]
     pub fn delete(url: Url) -> HttpResult<Request<Fresh>> { Request::new(Delete, url) }
 
     /// Create a new PUT request.
     #[inline]
+    #[deprecated = "use hyper::Client"]
     pub fn put(url: Url) -> HttpResult<Request<Fresh>> { Request::new(Put, url) }
 
     /// Create a new PATCH request.
     #[inline]
+    #[deprecated = "use hyper::Client"]
     pub fn patch(url: Url) -> HttpResult<Request<Fresh>> { Request::new(Patch, url) }
 
     /// Create a new HEAD request.
     #[inline]
+    #[deprecated = "use hyper::Client"]
     pub fn head(url: Url) -> HttpResult<Request<Fresh>> { Request::new(Head, url) }
 
     /// Create a new OPTIONS request.
     #[inline]
+    #[deprecated = "use hyper::Client"]
     pub fn options(url: Url) -> HttpResult<Request<Fresh>> { Request::new(Options, url) }
 
     /// Consume a Fresh Request, writing the headers and method,
@@ -113,15 +114,15 @@ impl Request<Fresh> {
         }
 
         debug!("writing head: {} {} {}", self.method, uri, self.version);
-        try_io!(write!(self.body, "{} {} {}", self.method, uri, self.version))
-        try_io!(self.body.write(LINE_ENDING));
+        try!(write!(&mut self.body, "{} {} {}", self.method, uri, self.version))
+        try!(self.body.write(LINE_ENDING));
 
 
         let stream = match self.method {
             Get | Head => {
                 debug!("headers [\n{}]", self.headers);
-                try_io!(write!(self.body, "{}", self.headers));
-                try_io!(self.body.write(LINE_ENDING));
+                try!(write!(&mut self.body, "{}", self.headers));
+                try!(self.body.write(LINE_ENDING));
                 EmptyWriter(self.body.unwrap())
             },
             _ => {
@@ -131,7 +132,7 @@ impl Request<Fresh> {
                 match self.headers.get::<common::ContentLength>() {
                     Some(cl) => {
                         chunked = false;
-                        len = cl.len();
+                        len = **cl;
                     },
                     None => ()
                 };
@@ -141,7 +142,7 @@ impl Request<Fresh> {
                     let encodings = match self.headers.get_mut::<common::TransferEncoding>() {
                         Some(&common::TransferEncoding(ref mut encodings)) => {
                             //TODO: check if chunked is already in encodings. use HashSet?
-                            encodings.push(common::transfer_encoding::Chunked);
+                            encodings.push(common::transfer_encoding::Encoding::Chunked);
                             false
                         },
                         None => true
@@ -149,13 +150,13 @@ impl Request<Fresh> {
 
                     if encodings {
                         self.headers.set::<common::TransferEncoding>(
-                            common::TransferEncoding(vec![common::transfer_encoding::Chunked]))
+                            common::TransferEncoding(vec![common::transfer_encoding::Encoding::Chunked]))
                     }
                 }
 
                 debug!("headers [\n{}]", self.headers);
-                try_io!(write!(self.body, "{}", self.headers));
-                try_io!(self.body.write(LINE_ENDING));
+                try!(write!(&mut self.body, "{}", self.headers));
+                try!(self.body.write(LINE_ENDING));
 
                 if chunked {
                     ChunkedWriter(self.body.unwrap())
@@ -184,7 +185,7 @@ impl Request<Streaming> {
     ///
     /// Consumes the Request.
     pub fn send(self) -> HttpResult<Response> {
-        let raw = try_io!(self.body.end()).unwrap();
+        let raw = try!(self.body.end()).into_inner();
         Response::new(raw)
     }
 }
@@ -206,18 +207,18 @@ mod tests {
     use std::boxed::BoxAny;
     use std::str::from_utf8;
     use url::Url;
-    use method::{Get, Head};
-    use mock::MockStream;
+    use method::Method::{Get, Head};
+    use mock::{MockStream, MockConnector};
     use super::Request;
 
     #[test]
     fn test_get_empty_body() {
-        let req = Request::with_stream::<MockStream>(
-            Get, Url::parse("http://example.dom").unwrap()
+        let req = Request::with_connector(
+            Get, Url::parse("http://example.dom").unwrap(), &mut MockConnector
         ).unwrap();
         let req = req.start().unwrap();
-        let stream = *req.body.end().unwrap().unwrap().downcast::<MockStream>().unwrap();
-        let bytes = stream.write.unwrap();
+        let stream = *req.body.end().unwrap().into_inner().downcast::<MockStream>().unwrap();
+        let bytes = stream.write.into_inner();
         let s = from_utf8(bytes[]).unwrap();
         assert!(!s.contains("Content-Length:"));
         assert!(!s.contains("Transfer-Encoding:"));
@@ -225,12 +226,12 @@ mod tests {
 
     #[test]
     fn test_head_empty_body() {
-        let req = Request::with_stream::<MockStream>(
-            Head, Url::parse("http://example.dom").unwrap()
+        let req = Request::with_connector(
+            Head, Url::parse("http://example.dom").unwrap(), &mut MockConnector
         ).unwrap();
         let req = req.start().unwrap();
-        let stream = *req.body.end().unwrap().unwrap().downcast::<MockStream>().unwrap();
-        let bytes = stream.write.unwrap();
+        let stream = *req.body.end().unwrap().into_inner().downcast::<MockStream>().unwrap();
+        let bytes = stream.write.into_inner();
         let s = from_utf8(bytes[]).unwrap();
         assert!(!s.contains("Content-Length:"));
         assert!(!s.contains("Transfer-Encoding:"));
