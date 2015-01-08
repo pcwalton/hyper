@@ -11,8 +11,7 @@ use std::mem::{mod, transmute, transmute_copy};
 use std::raw::{mod, TraitObject};
 
 use uany::UncheckedBoxAnyDowncast;
-use openssl::ssl::{Ssl, SslStream, SslContext, VerifyCallback};
-use openssl::ssl::SslVerifyMode::SslVerifyPeer;
+use openssl::ssl::{Ssl, SslStream, SslContext};
 use openssl::ssl::SslMethod::Sslv23;
 use openssl::ssl::error::{SslError, StreamError, OpenSslErrors, SslSessionClosed};
 
@@ -240,7 +239,10 @@ impl NetworkStream for HttpStream {
 
 /// A connector that will produce HttpStreams.
 #[allow(missing_copy_implementations)]
-pub struct HttpConnector(pub Option<VerifyCallback>);
+pub struct HttpConnector(pub Option<ContextVerifier>);
+
+/// Can set various verification schemes on the SSL context
+pub type ContextVerifier = for <'a> fn(&'a mut SslContext) -> ();
 
 impl NetworkConnector<HttpStream> for HttpConnector {
     fn connect(&mut self, host: &str, port: Port, scheme: &str) -> IoResult<HttpStream> {
@@ -254,7 +256,7 @@ impl NetworkConnector<HttpStream> for HttpConnector {
                 debug!("https scheme");
                 let stream = try!(TcpStream::connect(addr));
                 let mut context = try!(SslContext::new(Sslv23).map_err(lift_ssl_error));
-                self.0.as_ref().map(|cb| context.set_verify(SslVerifyPeer, Some(*cb)));
+                self.0.map(|cb| cb(&mut context));
                 let ssl = try!(Ssl::new(&context).map_err(lift_ssl_error));
                 try!(ssl.set_hostname(host).map_err(lift_ssl_error));
                 let stream = try!(SslStream::new(&context, stream).map_err(lift_ssl_error));
