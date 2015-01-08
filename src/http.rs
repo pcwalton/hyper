@@ -1,10 +1,9 @@
 //! Pieces pertaining to the HTTP message protocol.
-use std::borrow::Cow::{Borrowed, Owned};
 use std::cmp::min;
 use std::fmt;
 use std::io::{mod, Reader, IoResult, BufWriter};
 use std::num::from_u16;
-use std::str::{mod, SendStr};
+use std::str;
 
 use url::Url;
 use url::ParseError as UrlError;
@@ -584,11 +583,11 @@ pub type StatusLine = (HttpVersion, RawStatus);
 
 /// The raw status code and reason-phrase.
 #[deriving(PartialEq, Show)]
-pub struct RawStatus(pub u16, pub SendStr);
+pub struct RawStatus(pub u16, pub String);
 
 impl Clone for RawStatus {
     fn clone(&self) -> RawStatus {
-        RawStatus(self.0, (*self.1).clone().into_cow())
+        RawStatus(self.0, (*self.1).into_string())
     }
 }
 
@@ -670,12 +669,12 @@ pub fn read_status<R: Reader>(stream: &mut R) -> HttpResult<RawStatus> {
         Some(status) => match status.canonical_reason() {
             Some(phrase) => {
                 if phrase == reason {
-                    Borrowed(phrase)
+                    phrase.into_string()
                 } else {
-                    Owned(reason.into_string())
+                    reason.into_string()
                 }
             }
-            _ => Owned(reason.into_string())
+            _ => reason.into_string()
         },
         None => return Err(HttpStatusError)
     };
