@@ -23,7 +23,8 @@ git = "https://github.com/carllerche/curl-rust"
 git = "https://github.com/chris-morgan/rust-http"
 
 [dependencies.cookie]
-git = "https://github.com/alexcrichton/cookie-rs"
+git = "https://github.com/servo/cookie-rs"
+branch = "lenientparse_backport"
 
 [dependencies.time]
 git = "https://github.com/rust-lang/time"
