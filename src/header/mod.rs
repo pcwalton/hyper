@@ -16,6 +16,7 @@ use std::{hash, mem};
 use mucell::MuCell;
 use uany::{UncheckedAnyDowncast, UncheckedAnyMutDowncast};
 
+use serialize::{Decodable, Decoder, Encodable, Encoder};
 use http::{mod, LineEnding};
 use {HttpResult};
 
@@ -108,6 +109,34 @@ fn header_name<T: Header>() -> &'static str {
 #[deriving(Clone)]
 pub struct Headers {
     data: HashMap<CaseInsensitive, MuCell<Item>>
+}
+
+impl<E,S:Encoder<E>> Encodable<S,E> for Headers {
+    fn encode(&self, s: &mut S) -> Result<(),E> {
+        s.emit_map(self.data.len(), |s| {
+            for (i, (key, value)) in self.data.iter().enumerate() {
+                try!(s.emit_map_elt_key(i, |s| key.encode(s)));
+                try!(s.emit_map_elt_val(i, |s| value.borrow().raw.encode(s)));
+            }
+            Ok(())
+        })
+    }
+}
+
+impl<E,D:Decoder<E>> Decodable<D,E> for Headers {
+    fn decode(d: &mut D) -> Result<Headers,E> {
+        d.read_map(|d, size| {
+            let mut headers = Headers {
+                data: HashMap::new(),
+            };
+            for i in range(0, size) {
+                let key = try!(d.read_map_elt_key(i, |d| Decodable::decode(d)));
+                let raw_value = try!(d.read_map_elt_val(i, |d| Decodable::decode(d)));
+                headers.set_raw(key, raw_value);
+            }
+            Ok(headers)
+        })
+    }
 }
 
 impl Headers {
@@ -444,7 +473,7 @@ impl fmt::Show for Box<HeaderFormat + Send + Sync> {
     }
 }
 
-#[deriving(Clone)]
+#[deriving(Clone, Decodable, Encodable)]
 struct CaseInsensitive(String);
 
 impl Str for CaseInsensitive {
