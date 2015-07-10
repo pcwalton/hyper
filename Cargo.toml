@@ -25,8 +25,14 @@ url = "0.2"
 traitobject = "0.0.1"
 typeable = "0.1"
 
+[dependencies.serde]
+version = "*"
+optional = true
+
 [dev-dependencies]
 env_logger = "*"
 
 [features]
+serde-serialization = ["serde"]
 nightly = []
+

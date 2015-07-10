@@ -15,6 +15,9 @@ use uri::RequestUri;
 use version::HttpVersion::{self, Http10, Http11};
 use {Error};
 
+#[cfg(feature = "serde-serialization")]
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use self::HttpReader::{SizedReader, ChunkedReader, EofReader, EmptyReader};
 use self::HttpWriter::{ThroughWriter, ChunkedWriter, SizedWriter, EmptyWriter};
 
@@ -454,6 +457,21 @@ pub const LINE_ENDING: &'static str = "\r\n";
 /// The raw status code and reason-phrase.
 #[derive(Clone, PartialEq, Debug)]
 pub struct RawStatus(pub u16, pub Cow<'static, str>);
+
+#[cfg(feature = "serde-serialization")]
+impl Serialize for RawStatus {
+    fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: Serializer {
+        (self.0, self.1.clone().into_owned()).serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde-serialization")]
+impl Deserialize for RawStatus {
+    fn deserialize<D>(deserializer: &mut D) -> Result<RawStatus, D::Error> where D: Deserializer {
+        let representation: (u16, String) = try!(Deserialize::deserialize(deserializer));
+        Ok(RawStatus(representation.0, Cow::Owned(representation.1)))
+    }
+}
 
 /// Checks if a connection should be kept alive.
 pub fn should_keep_alive(version: HttpVersion, headers: &Headers) -> bool {

@@ -1,5 +1,10 @@
 use mime::Mime;
 
+#[cfg(feature = "serde-serialization")]
+use header::Header;
+#[cfg(feature = "serde-serialization")]
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 header! {
     #[doc="`Content-Type` header, defined in"]
     #[doc="[RFC7231](http://tools.ietf.org/html/rfc7231#section-3.1.1.5)"]
@@ -68,6 +73,22 @@ impl ContentType {
     #[inline]
     pub fn png() -> ContentType {
         ContentType(mime!(Image/Png))
+    }
+}
+
+#[cfg(feature = "serde-serialization")]
+impl Serialize for ContentType {
+    fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: Serializer {
+        format!("{}", self).serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde-serialization")]
+impl Deserialize for ContentType {
+    fn deserialize<D>(deserializer: &mut D) -> Result<ContentType, D::Error>
+                      where D: Deserializer {
+        let string_representation: String = try!(Deserialize::deserialize(deserializer));
+        Ok(Header::parse_header(&[string_representation.into_bytes()]).unwrap())
     }
 }
 
